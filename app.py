@@ -11,6 +11,7 @@ st.set_page_config(page_title="Tomato Crop Health Detector", layout="wide")
 st.title("🍅 AI Tomato Crop Health Detector")
 st.write("Upload a clear picture of a tomato plant leaf to scan for diseases.")
 
+# Private log file for the app owner only (never shown to visitors)
 LOG_FILE = "prediction_logs.csv"
 
 def log_prediction(filename, predicted_class, confidence, execution_time):
@@ -31,6 +32,10 @@ def log_prediction(filename, predicted_class, confidence, execution_time):
 def load_my_model():
     return tf.keras.models.load_model("tomato_disease_model.keras")
 
+# Each visitor gets their own empty history (fresh page for every new visitor)
+if "history" not in st.session_state:
+    st.session_state["history"] = []
+
 model = None
 try:
     model = load_my_model()
@@ -47,22 +52,6 @@ TREATMENT_GUIDE = {
     "Yellow Leaf Curl Virus": "🪰 **Pest Control Required:** Spread by whiteflies. Use yellow sticky traps, insecticidal soap or neem oil, and remove infected plants.",
 }
 
-# ---------------- Sidebar KPIs ----------------
-st.sidebar.title("📊 Monitoring KPIs")
-if os.path.exists(LOG_FILE):
-    try:
-        df_logs = pd.read_csv(LOG_FILE)
-        if not df_logs.empty:
-            st.sidebar.metric("Total Scans", len(df_logs))
-            st.sidebar.metric("Avg Confidence", f"{df_logs['Confidence (%)'].mean():.2f}%")
-            st.sidebar.metric("Avg Latency", f"{df_logs['Execution Time (s)'].mean():.3f}s")
-            st.sidebar.write("**Class Distribution**")
-            st.sidebar.bar_chart(df_logs["Predicted Class"].value_counts())
-    except Exception as e:
-        st.sidebar.error(f"Error reading logs: {e}")
-else:
-    st.sidebar.info("No predictions recorded yet.")
-
 # ---------------- Main flow ----------------
 uploaded_file = st.file_uploader("Choose a leaf image...", type=["jpg", "jpeg", "png"])
 
@@ -70,8 +59,6 @@ if uploaded_file is not None and model is not None:
     start_time = time.time()
     image = Image.open(uploaded_file).convert("RGB")
 
-    # Image on the left, diagnosis + recommendations on the right
-    # (on phones Streamlit stacks these automatically)
     col1, col2 = st.columns([1, 1], gap="large")
 
     with col1:
@@ -92,12 +79,17 @@ if uploaded_file is not None and model is not None:
         confidence = 100 * float(probabilities[idx])
         execution_time = time.time() - start_time
 
-        # Log only once per uploaded file (Streamlit reruns the script on interaction)
+        # Record once per uploaded file (Streamlit reruns the script on interaction)
         file_key = f"{uploaded_file.name}-{uploaded_file.size}"
         if st.session_state.get("last_logged") != file_key:
+            st.session_state["history"].append({
+                "Predicted Class": predicted_class,
+                "Confidence (%)": confidence,
+                "Execution Time (s)": execution_time,
+            })
+            st.session_state["last_logged"] = file_key
             try:
                 log_prediction(uploaded_file.name, predicted_class, confidence, execution_time)
-                st.session_state["last_logged"] = file_key
             except Exception:
                 pass  # logging must never block the result
 
@@ -109,3 +101,17 @@ if uploaded_file is not None and model is not None:
         st.markdown("---")
         st.subheader("📋 Recommendations")
         st.write(TREATMENT_GUIDE.get(predicted_class, "Consult local agricultural guidance."))
+
+# ---------------- Sidebar KPIs (this visitor's own session only) ----------------
+# Placed after the prediction so the numbers update immediately.
+st.sidebar.title("📊 Monitoring KPIs")
+history = st.session_state["history"]
+if history:
+    df_hist = pd.DataFrame(history)
+    st.sidebar.metric("Total Scans", len(df_hist))
+    st.sidebar.metric("Avg Confidence", f"{df_hist['Confidence (%)'].mean():.2f}%")
+    st.sidebar.metric("Avg Latency", f"{df_hist['Execution Time (s)'].mean():.3f}s")
+    st.sidebar.write("**Class Distribution**")
+    st.sidebar.bar_chart(df_hist["Predicted Class"].value_counts())
+else:
+    st.sidebar.info("No scans yet. Upload a leaf image to begin.")
